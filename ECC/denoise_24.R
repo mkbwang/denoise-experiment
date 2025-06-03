@@ -1,42 +1,98 @@
 
 
 rm(list=ls())
-library(DFBM)
+
 library(BenchmarkDenoise)
+library(phyloseq)
+library(caret)
+library(ADAPT)
+library(DFBM)
 
-marker_ASVs <- readRDS("ECC/DAA/marker_ASVs.rds")
+args <- commandArgs(trailingOnly=TRUE)
+myseed <- as.integer(args[1])
 
-data_24 <- readRDS("ECC/phyasv_visit24.rds")
-metadata_24 <- sample_data(data_24)
-count_24 <- otu_table(data_24) |> data.frame() |> as.matrix()
 
-# select marker genes
-count_24 <- count_24[, marker_ASVs$ASV_24]
-target <- metadata_24$CaseEver
-target_binary <- 1*(target == "Case")
 
-# normalize
-count_24_normalized <- normalize(count_mat=count_24, libsize=1e3)
+# load phyloseq object
+phyasv_24 <- readRDS("phyasv_visit24.rds")
+metadata_24 <- sample_data(phyasv_24)
+samples <- sample_names(phyasv_24)
 
-write.csv(data.frame(count_24_normalized),
-          "ECC/denoised/count_24_marker_original.csv",
-          quote=FALSE)
 
-# denoise
+# split into training and test samples
+train_ids <- createDataPartition(metadata_24$CaseEver, p=0.6, list=FALSE)
+train_samples <- samples[train_ids]
+train_labels <- 1*(metadata_24$CaseEver[train_ids] == 'Case')
+test_samples <- samples[-train_ids]
+test_labels <- 1*(metadata_24$CaseEver[-train_ids] == 'Case')
+
+
+# identify marker taxa
+phyasv_24_train <- prune_samples(train_samples, phyasv_24)
+count_train <- otu_table(phyasv_24_train)@.Data
+phyasv_24_test <- prune_samples(test_samples, phyasv_24)
+count_test <- otu_table(phyasv_24_test)@.Data
+da_result_train <- adapt(phyasv_24_train, cond.var="CaseEver")
+da_result_table_train <- summary(da_result_train)
+marker_taxa <- da_result_table_train$Taxa[da_result_table_train$pval < 0.05]
+
+
+
+# denoise training data and test data separately
+count_train <- count_train[, marker_taxa]
+count_test <- count_test[, marker_taxa]
+
+
+
+count_train_normalized <- normalize(count_mat=count_train)
+count_train_imputed <- simple_impute(count_mat=count_train_normalized) |> t()
+count_test_normalized <- normalize(count_mat=count_test)
+count_test_imputed <- simple_impute(count_mat=count_test_normalized) |> t()
+
+
+output <- list()
+output$train_labels <- train_labels
+output$test_labels <- test_labels
+
+output$train_original <- count_train_normalized
+output$test_original <- count_test_normalized
+
+
+
 for (j in 4:9){
+  
   print(j)
-  dfbm_result <- dfbm(count_mat=count_24_normalized,
-                        max_K=6,
+  print("Denoise train")
+  train_denoise <- dfbm(count_mat = count_train_normalized,
+                        quantiles = seq(0.1, 0.9, 0.1),
                         increment=j/10,
-                        ignore=0.1,
+                        max_K=6,
+                        ignore=0.05,
                         interpolate=FALSE,
                         ncores=4)
+  count_train_denoised <- train_denoise$denoised_counts
+  rownames(count_train_denoised) <- rownames(count_train_normalized)
+  colnames(count_train_denoised) <- colnames(count_train_normalized)
+  output[[sprintf("train_denoised_%d", j)]] <- count_train_denoised
   
-  thresholds <- dfbm_result$thresholds
-  count_24_denoised <- dfbm_result$denoised_counts
-  saveRDS(list(thresholds=thresholds, denoised_counts=count_24_denoised),
-          sprintf("ECC/denoised/count_24_marker_denoised_%d.rds", j))
-
+  
+  print("Denoise test")
+  test_denoise <- dfbm(count_mat = count_test_normalized,
+                       quantiles = seq(0.1, 0.9, 0.1),
+                       increment=j/10,
+                       max_K=6,
+                       ignore=0.05,
+                       interpolate=FALSE,
+                       ncores=4)
+  count_test_denoised <- test_denoise$denoised_counts
+  rownames(count_test_denoised) <- rownames(count_test_normalized)
+  colnames(count_test_denoised) <- colnames(count_test_normalized)
+  output[[sprintf("test_denoised_%d", j)]] <- count_test_denoised
+  
+  
 }
+
+
+saveRDS(output, sprintf("denoised_24/denoised_24_%d.rds", myseed))
 
 
