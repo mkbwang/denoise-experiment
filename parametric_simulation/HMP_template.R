@@ -75,7 +75,7 @@ col_annotation <- HeatmapAnnotation(
 col_fun <- colorRamp2(c(0, 2), c("#FFFFFF", "#AA0000"))
 save_heatmap(X=log_real_counts,
              entry_name="Log Count",
-             filename="scDesign/real_data_template.png",
+             filename="parametric_simulation/real_data_template.png",
              rowannot=NULL,
              colannot=col_annotation,
              cmap=col_fun,
